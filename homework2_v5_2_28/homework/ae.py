@@ -171,6 +171,7 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
         """
         encoded = self.encode(x)
         decoded = self.decode(encoded)
+        return decoded, {}
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         return self.encoder(x)
