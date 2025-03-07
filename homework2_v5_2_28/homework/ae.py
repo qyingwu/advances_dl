@@ -15,21 +15,33 @@ def load() -> torch.nn.Module:
 def hwc_to_chw(x: torch.Tensor) -> torch.Tensor:
     """
     Convert an arbitrary tensor from (H, W, C) to (C, H, W) format.
-    This allows us to switch from trnasformer-style channel-last to pytorch-style channel-first
-    images. Works with or without the batch dimension.
     """
-    dims = list(range(x.dim()))
-    dims = dims[:-3] + [dims[-1]] + [dims[-3]] + [dims[-2]]
-    return x.permute(*dims)
+    # Get the shape
+    *batch_dims, h, w, c = x.shape
+    # Reshape to preserve memory layout
+    x = x.reshape(-1, h, w, c)
+    x = x.reshape(x.shape[0], h * w, c)
+    x = x.transpose(-1, -2)
+    x = x.reshape(x.shape[0], c, h, w)
+    if batch_dims:
+        x = x.reshape(*batch_dims, c, h, w)
+    return x
 
 
 def chw_to_hwc(x: torch.Tensor) -> torch.Tensor:
     """
-    The opposite of hwc_to_chw. Works with or without the batch dimension.
+    Convert an arbitrary tensor from (C, H, W) to (H, W, C) format.
     """
-    dims = list(range(x.dim()))
-    dims = dims[:-3] + [dims[-2]] + [dims[-1]] + [dims[-3]]
-    return x.permute(*dims)
+    # Get the shape
+    *batch_dims, c, h, w = x.shape
+    # Reshape to preserve memory layout
+    x = x.reshape(-1, c, h, w)
+    x = x.reshape(x.shape[0], c, h * w)
+    x = x.transpose(-1, -2)
+    x = x.reshape(x.shape[0], h, w, c)
+    if batch_dims:
+        x = x.reshape(*batch_dims, h, w, c)
+    return x
 
 
 class PatchifyLinear(torch.nn.Module):
@@ -114,7 +126,6 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
 
         def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
             super().__init__()
-            # Convert to latent
             self.patch_embed = torch.nn.Conv2d(3, latent_dim, 
                                              kernel_size=patch_size, 
                                              stride=patch_size)
@@ -126,13 +137,10 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             # x: (B, H, W, 3)
-            # Convert to channels-first format
-            x = x.permute(0, 3, 1, 2).contiguous()  # (B, 3, H, W)
-            x = self.patch_embed(x)                  # (B, latent_dim, h, w)
-            x = self.process(x)                      # (B, bottleneck, h, w)
-            # Convert back to channels-last format
-            x = x.permute(0, 2, 3, 1).contiguous()  # (B, h, w, bottleneck)
-            return x
+            x = hwc_to_chw(x)
+            x = self.patch_embed(x)
+            x = self.process(x)
+            return chw_to_hwc(x)
 
     class PatchDecoder(torch.nn.Module):
         def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
@@ -141,7 +149,6 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
                 torch.nn.Conv2d(bottleneck, latent_dim, 1),
                 torch.nn.GELU()
             )
-            # Reconstruct 
             self.unpatch = torch.nn.ConvTranspose2d(
                 latent_dim, 3,
                 kernel_size=patch_size,
@@ -150,13 +157,10 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             # x: (B, h, w, bottleneck)
-            # Convert to channels-first format
-            x = x.permute(0, 3, 1, 2).contiguous()  # (B, bottleneck, h, w)
-            x = self.process(x)                      # (B, latent_dim, h, w)
-            x = self.unpatch(x)                      # (B, 3, H, W)
-            # Convert back to channels-last format
-            x = x.permute(0, 2, 3, 1).contiguous()  # (B, H, W, 3)
-            return x
+            x = hwc_to_chw(x)
+            x = self.process(x)
+            x = self.unpatch(x)
+            return chw_to_hwc(x)
 
     def __init__(self, patch_size: int = 25, latent_dim: int = 128, bottleneck: int = 128):
         super().__init__()
