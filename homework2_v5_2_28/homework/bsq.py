@@ -47,9 +47,9 @@ class BSQ(torch.nn.Module):
     def __init__(self, codebook_bits: int, embedding_dim: int):
         super().__init__()
         self._codebook_bits = codebook_bits
-        # Down proj
+        # Down projection to binary code dimension
         self.down_proj = torch.nn.Linear(embedding_dim, codebook_bits)
-        # Up projection back to embedding
+        # Up projection back to embedding dimension
         self.up_proj = torch.nn.Linear(codebook_bits, embedding_dim)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -60,10 +60,12 @@ class BSQ(torch.nn.Module):
         - differentiable sign
         """
         x = self.down_proj(x)
-        # L2
+    
+        # Strict L2 Normalization before Quantization
         x = x / (torch.norm(x, p=2, dim=-1, keepdim=True) + 1e-6)
-        # Convert to -1/1
+
         x = diff_sign(x)
+
         return x
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
@@ -90,10 +92,10 @@ class BSQ(torch.nn.Module):
 
     def _code_to_index(self, x: torch.Tensor) -> torch.Tensor:
         x = (x >= 0).int()
-        return (x * 2 ** torch.arange(x.size(-1)).to(x.device)).sum(dim=-1)
-
+        return (x * (2 ** torch.arange(x.size(-1), device=x.device))).sum(dim=-1)
+    
     def _index_to_code(self, x: torch.Tensor) -> torch.Tensor:
-        return 2 * ((x[..., None] & (2 ** torch.arange(self._codebook_bits).to(x.device))) > 0).float() - 1
+        return (2 * ((x[..., None] & (2 ** torch.arange(self._codebook_bits).to(x.device))) > 0).float() - 1)
 
 
 class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
@@ -104,23 +106,22 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
           Changing the patch-size of codebook-size will complicate later parts of the assignment.
     """
 
-    def __init__(self, patch_size: int = 5, latent_dim: int = 128, codebook_bits: int = 10):
+    def __init__(self, patch_size: int = 5, latent_dim: int = 128, codebook_bits: int = 12):
         super().__init__(patch_size=patch_size, latent_dim=latent_dim)
         self.codebook_bits = codebook_bits
-        #  BSQ layer 
         self.bsq = BSQ(codebook_bits, latent_dim)
 
     def encode_index(self, x: torch.Tensor) -> torch.Tensor:
         """Convert image to tokens"""
-        features = self.encoder(x) 
-        quantized = self.bsq.encode(features)
-        return self.bsq._code_to_index(quantized)
+        features = self.encoder(x)  # Get features from autoencoder
+        quantized = self.bsq.encode(features)  # Quantize to binary
+        return self.bsq._code_to_index(quantized)  # Convert to indices
 
     def decode_index(self, x: torch.Tensor) -> torch.Tensor:
         """Convert tokens back to image"""
-        quantized = self.bsq._index_to_code(x) 
-        features = self.bsq.decode(quantized) 
-        return self.decoder(features) 
+        quantized = self.bsq._index_to_code(x)  # Convert indices to binary
+        features = self.bsq.decode(quantized)    # Convert binary to features
+        return self.decoder(features)            # Decode features to image
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encode image to binary features"""
@@ -135,27 +136,22 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
-        Return the reconstructed image and a dictionary of additional loss terms you would like to
-        minimize (or even just visualize).
-        Hint: It can be helpful to monitor the codebook usage with
-
-              cnt = torch.bincount(self.encode_index(x).flatten(), minlength=2**self.codebook_bits)
-
-              and returning
-
-              {
-                "cb0": (cnt == 0).float().mean().detach(),
-                "cb2": (cnt <= 2).float().mean().detach(),
-                ...
-              }
+        Forward pass with monitoring of codebook usage
         """
         encoded = self.encode(x)
         decoded = self.decode(encoded)
 
+        # Monitor codebook usage
         tokens = self.encode_index(x)
         cnt = torch.bincount(tokens.flatten(), minlength=2**self.codebook_bits)
+
+        # Compute entropy loss
+        token_probs = cnt / (cnt.sum() + 1e-6)
+        entropy_loss = -torch.sum(token_probs * torch.log(token_probs + 1e-6))  # Shannon entropy
+
         return decoded, {
-            "cb0": (cnt == 0).float().mean(), 
-            "cb2": (cnt <= 2).float().mean(),
-            "cb10": (cnt <= 10).float().mean() 
+            "cb0": (cnt == 0).float().mean(),  # Unused tokens
+            "cb2": (cnt <= 2).float().mean(),  # Rarely used tokens
+            "cb10": (cnt <= 10).float().mean(), # Very rarely used tokens
+            "entropy_loss": entropy_loss
         }
