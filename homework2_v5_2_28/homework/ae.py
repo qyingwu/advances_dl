@@ -53,7 +53,7 @@ class PatchifyLinear(torch.nn.Module):
     Feel free to use this directly, or as an inspiration for how to use conv the the inputs given.
     """
 
-    def __init__(self, patch_size: int = 25, latent_dim: int = 128):
+    def __init__(self, patch_size: int = 5, latent_dim: int = 128):
         super().__init__()
         self.patch_conv = torch.nn.Conv2d(3, latent_dim, patch_size, patch_size, bias=False)
 
@@ -75,7 +75,7 @@ class UnpatchifyLinear(torch.nn.Module):
     Feel free to use this directly, or as an inspiration for how to use conv the the inputs given.
     """
 
-    def __init__(self, patch_size: int = 25, latent_dim: int = 128):
+    def __init__(self, patch_size: int = 5, latent_dim: int = 128):
         super().__init__()
         self.unpatch_conv = torch.nn.ConvTranspose2d(latent_dim, 3, patch_size, patch_size, bias=False)
 
@@ -130,13 +130,14 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
                                              kernel_size=patch_size, 
                                              stride=patch_size)
             
+            #Add one additional Conv layer before reducing dimensions
             self.process = torch.nn.Sequential(
+                torch.nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1),
                 torch.nn.GELU(),
                 torch.nn.Conv2d(latent_dim, bottleneck, 1)
             )
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            # x: (B, H, W, 3)
             x = hwc_to_chw(x)
             x = self.patch_embed(x)
             x = self.process(x)
@@ -147,7 +148,9 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             super().__init__()
             self.process = torch.nn.Sequential(
                 torch.nn.Conv2d(bottleneck, latent_dim, 1),
-                torch.nn.GELU()
+                torch.nn.GELU(),
+                torch.nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1),
+                torch.nn.GELU(),
             )
             self.unpatch = torch.nn.ConvTranspose2d(
                 latent_dim, 3,
@@ -156,13 +159,12 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             )
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            # x: (B, h, w, bottleneck)
             x = hwc_to_chw(x)
             x = self.process(x)
             x = self.unpatch(x)
             return chw_to_hwc(x)
 
-    def __init__(self, patch_size: int = 25, latent_dim: int = 128, bottleneck: int = 128):
+    def __init__(self, patch_size: int = 5, latent_dim: int = 128, bottleneck: int = 128):
         super().__init__()
         self.encoder = self.PatchEncoder(patch_size, latent_dim, bottleneck)
         self.decoder = self.PatchDecoder(patch_size, latent_dim, bottleneck)

@@ -47,9 +47,7 @@ class BSQ(torch.nn.Module):
     def __init__(self, codebook_bits: int, embedding_dim: int):
         super().__init__()
         self._codebook_bits = codebook_bits
-        # Down projection to binary code dimension
         self.down_proj = torch.nn.Linear(embedding_dim, codebook_bits)
-        # Up projection back to embedding dimension
         self.up_proj = torch.nn.Linear(codebook_bits, embedding_dim)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -60,12 +58,9 @@ class BSQ(torch.nn.Module):
         - differentiable sign
         """
         x = self.down_proj(x)
-    
-        # Strict L2 Normalization before Quantization
+        # L2 Normalization
         x = x / (torch.norm(x, p=2, dim=-1, keepdim=True) + 1e-6)
-
         x = diff_sign(x)
-
         return x
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
@@ -106,22 +101,22 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
           Changing the patch-size of codebook-size will complicate later parts of the assignment.
     """
 
-    def __init__(self, patch_size: int = 5, latent_dim: int = 128, codebook_bits: int = 12):
+    def __init__(self, patch_size: int = 5, latent_dim: int = 128, codebook_bits: int = 10):
         super().__init__(patch_size=patch_size, latent_dim=latent_dim)
         self.codebook_bits = codebook_bits
         self.bsq = BSQ(codebook_bits, latent_dim)
 
     def encode_index(self, x: torch.Tensor) -> torch.Tensor:
         """Convert image to tokens"""
-        features = self.encoder(x)  # Get features from autoencoder
-        quantized = self.bsq.encode(features)  # Quantize to binary
-        return self.bsq._code_to_index(quantized)  # Convert to indices
+        features = self.encoder(x)
+        quantized = self.bsq.encode(features)
+        return self.bsq._code_to_index(quantized)
 
     def decode_index(self, x: torch.Tensor) -> torch.Tensor:
         """Convert tokens back to image"""
-        quantized = self.bsq._index_to_code(x)  # Convert indices to binary
-        features = self.bsq.decode(quantized)    # Convert binary to features
-        return self.decoder(features)            # Decode features to image
+        quantized = self.bsq._index_to_code(x)
+        features = self.bsq.decode(quantized)
+        return self.decoder(features)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encode image to binary features"""
@@ -144,8 +139,6 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
         # Monitor codebook usage
         tokens = self.encode_index(x)
         cnt = torch.bincount(tokens.flatten(), minlength=2**self.codebook_bits)
-
-        # Compute entropy loss
         token_probs = cnt / (cnt.sum() + 1e-6)
         entropy_loss = -torch.sum(token_probs * torch.log(token_probs + 1e-6))  # Shannon entropy
 
