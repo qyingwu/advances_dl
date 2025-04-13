@@ -15,33 +15,23 @@ def load() -> torch.nn.Module:
 def hwc_to_chw(x: torch.Tensor) -> torch.Tensor:
     """
     Convert an arbitrary tensor from (H, W, C) to (C, H, W) format.
+    This allows us to switch from trnasformer-style channel-last to pytorch-style channel-first
+    images. Works with or without the batch dimension.
     """
-    # Get the shape
-    *batch_dims, h, w, c = x.shape
-    # Reshape to preserve memory layout
-    x = x.reshape(-1, h, w, c)
-    x = x.reshape(x.shape[0], h * w, c)
-    x = x.transpose(-1, -2)
-    x = x.reshape(x.shape[0], c, h, w)
-    if batch_dims:
-        x = x.reshape(*batch_dims, c, h, w)
-    return x
+
+    dims = list(range(x.dim()))
+    dims = dims[:-3] + [dims[-1]] + [dims[-3]] + [dims[-2]]
+    return x.permute(*dims)
 
 
 def chw_to_hwc(x: torch.Tensor) -> torch.Tensor:
     """
+    The opposite of hwc_to_chw. Works with or without the batch dimension.
     Convert an arbitrary tensor from (C, H, W) to (H, W, C) format.
     """
-    # Get the shape
-    *batch_dims, c, h, w = x.shape
-    # Reshape to preserve memory layout
-    x = x.reshape(-1, c, h, w)
-    x = x.reshape(x.shape[0], c, h * w)
-    x = x.transpose(-1, -2)
-    x = x.reshape(x.shape[0], h, w, c)
-    if batch_dims:
-        x = x.reshape(*batch_dims, h, w, c)
-    return x
+    dims = list(range(x.dim()))
+    dims = dims[:-3] + [dims[-2]] + [dims[-1]] + [dims[-3]]
+    return x.permute(*dims)
 
 
 class PatchifyLinear(torch.nn.Module):

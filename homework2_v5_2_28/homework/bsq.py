@@ -136,7 +136,7 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
         encoded = self.encode(x)
         decoded = self.decode(encoded)
 
-        # Monitor codebook usage
+        # Monitor codebook usage for debug  issues, 
         tokens = self.encode_index(x)
         cnt = torch.bincount(tokens.flatten(), minlength=2**self.codebook_bits)
         token_probs = cnt / (cnt.sum() + 1e-6)
@@ -144,7 +144,7 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
 
         return decoded, {
             "cb0": (cnt == 0).float().mean(),  # Unused tokens
-            "cb2": (cnt <= 2).float().mean(),  # Rarely used tokens
-            "cb10": (cnt <= 10).float().mean(), # Very rarely used tokens
+            "cb2": (cnt <= 2).float().mean(),  # Rarely used
+            "cb10": (cnt <= 10).float().mean(), # Very rarely used
             "entropy_loss": entropy_loss
         }
