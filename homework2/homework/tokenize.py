@@ -42,6 +42,10 @@ def tokenize(tokenizer: Path, output: Path, *images: Path):
     else:
         np_compressed_tensor = np_compressed_tensor.astype(np.uint32)
 
+    # Ensure output directory exists
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
     torch.save(np_compressed_tensor, output)
 
 

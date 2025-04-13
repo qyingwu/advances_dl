@@ -105,22 +105,55 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
 
         def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
             super().__init__()
-            raise NotImplementedError()
+            # Convert patches to latent vectors using strided convolution
+            self.patch_embed = torch.nn.Conv2d(3, latent_dim, 
+                                             kernel_size=patch_size, 
+                                             stride=patch_size)
+            # Process features
+            self.process = torch.nn.Sequential(
+                torch.nn.GELU(),
+                torch.nn.Conv2d(latent_dim, bottleneck, 1)
+            )
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            raise NotImplementedError()
+            # x: (B, H, W, 3)
+            # Convert to channels-first format
+            x = x.permute(0, 3, 1, 2).contiguous()  # (B, 3, H, W)
+            x = self.patch_embed(x)                  # (B, latent_dim, h, w)
+            x = self.process(x)                      # (B, bottleneck, h, w)
+            # Convert back to channels-last format
+            x = x.permute(0, 2, 3, 1).contiguous()  # (B, h, w, bottleneck)
+            return x
 
     class PatchDecoder(torch.nn.Module):
         def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
             super().__init__()
-            raise NotImplementedError()
+            # Process bottleneck features
+            self.process = torch.nn.Sequential(
+                torch.nn.Conv2d(bottleneck, latent_dim, 1),
+                torch.nn.GELU()
+            )
+            # Reconstruct patches
+            self.unpatch = torch.nn.ConvTranspose2d(
+                latent_dim, 3,
+                kernel_size=patch_size,
+                stride=patch_size
+            )
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            raise NotImplementedError()
+            # x: (B, h, w, bottleneck)
+            # Convert to channels-first format
+            x = x.permute(0, 3, 1, 2).contiguous()  # (B, bottleneck, h, w)
+            x = self.process(x)                      # (B, latent_dim, h, w)
+            x = self.unpatch(x)                      # (B, 3, H, W)
+            # Convert back to channels-last format
+            x = x.permute(0, 2, 3, 1).contiguous()  # (B, H, W, 3)
+            return x
 
     def __init__(self, patch_size: int = 25, latent_dim: int = 128, bottleneck: int = 128):
         super().__init__()
-        raise NotImplementedError()
+        self.encoder = self.PatchEncoder(patch_size, latent_dim, bottleneck)
+        self.decoder = self.PatchDecoder(patch_size, latent_dim, bottleneck)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
@@ -128,10 +161,12 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
         minimize (or even just visualize).
         You can return an empty dictionary if you don't have any additional terms.
         """
-        raise NotImplementedError()
+        encoded = self.encode(x)
+        decoded = self.decode(encoded)
+        return decoded, {}
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        return self.encoder(x)
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        return self.decoder(x)
