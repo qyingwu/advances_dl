@@ -9,13 +9,20 @@ def load() -> BaseLLM:
 
     model_name = "sft_model"  # Make sure this matches the name used in the grader
     model_path = Path(__file__).parent / model_name
+    print(f"Model path: {model_path}")
 
     llm = BaseLLM()
+    print(f"Base model loaded, device: {llm.device}")
+    
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
+    print("LoRA adapters loaded")
+    
     llm.model.eval()
+    print("Model set to eval mode")
     
     # Set the model_name attribute to identify this as an SFT model
     llm.model_name = "sft"
+    print("Model name set to 'sft'")
 
     return llm
 
@@ -50,13 +57,22 @@ def tokenize(tokenizer, question: str, answer: str):
 
 def format_example(prompt: str, answer: str) -> dict[str, str]:
     """
-    Construct a question / answer pair. Consider rounding the answer to make it easier for the LLM.
+    Construct a question / answer pair with explicit unit conversion hints.
     """
     # Round the answer to 3 decimal places for simplicity
     rounded_answer = round(float(answer), 3)
     
-    # Format the question and answer
-    formatted_question = prompt
+    # Format the question with explicit conversion instructions
+    formatted_question = (
+        f"{prompt}\n"
+        "Follow these steps:\n"
+        "1. Identify the units being converted\n"
+        "2. Use the correct conversion factor\n"
+        "3. Perform the calculation\n"
+        "4. Round to 3 decimal places\n"
+        "Please provide your answer in the format <answer>X</answer> where X is the numerical answer."
+    )
+    
     formatted_answer = f"<answer>{rounded_answer}</answer>"
     
     return {
@@ -109,38 +125,46 @@ def train_model(
     # Load the base model
     llm = BaseLLM()
     
-    # Configure LoRA with higher rank for better accuracy
+    # Configure LoRA with optimized parameters
     lora_config = LoraConfig(
-        r=24,  # Higher rank for better accuracy
-        lora_alpha=96,  # Alpha parameter (4x rank)
-        target_modules="all-linear",  # Apply LoRA to all linear layers
+        r=8,  # Increased rank for better capacity
+        lora_alpha=32,  # Alpha = 4x rank
+        target_modules="all-linear",
+        lora_dropout=0.1,  # Add dropout for regularization
         bias="none",
         task_type=TaskType.CAUSAL_LM,
     )
     
     # Convert the model to a LoRA model
     model = get_peft_model(llm.model, lora_config)
+    model.print_trainable_parameters()
     
-    # Enable input require grads for gradient checkpointing
+    # Enable gradient checkpointing for memory efficiency
     model.enable_input_require_grads()
+    model.gradient_checkpointing_enable()
     
     # Prepare the dataset
     train_dataset = Dataset("train")
     tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
     
-    # Set up training arguments with improved settings
+    # Set up training arguments with optimized settings
     training_args = TrainingArguments(
         output_dir=output_dir,
         logging_dir=output_dir,
         report_to="tensorboard",
-        learning_rate=5e-5,  # Lower learning rate for stability
-        num_train_epochs=10,  # More epochs for better accuracy
-        per_device_train_batch_size=16,  # Smaller batch size for stability
+        learning_rate=2e-4,  # Higher learning rate with warm-up
+        num_train_epochs=15,  # More epochs for better learning
+        per_device_train_batch_size=8,  # Smaller batch size
+        gradient_accumulation_steps=4,  # Effective batch size = 32
+        max_grad_norm=0.3,  # Gradient clipping for stability
         gradient_checkpointing=True,
         save_strategy="epoch",
-        weight_decay=0.01,  # Add weight decay for regularization
-        warmup_ratio=0.1,  # Add warmup
-        lr_scheduler_type="cosine",  # Use cosine learning rate schedule
+        weight_decay=0.05,  # Increased weight decay
+        warmup_ratio=0.1,
+        lr_scheduler_type="cosine_with_restarts",  # Cosine with restarts for better optimization
+        save_total_limit=2,  # Keep only the last 2 checkpoints
+        logging_steps=10,
+        optim="adamw_torch",  # Use PyTorch's AdamW
     )
     
     # Create the trainer
@@ -159,25 +183,80 @@ def train_model(
     # Test the model
     test_model(output_dir)
     
-    # Print a message to remind the user to run the grader
     print("\nTraining completed. To run the grader, use:")
     print("python -m grader.tests")
 
 
 def test_model(ckpt_path: str):
+    print("\nStarting test_model...")
     testset = Dataset("valid")
-    llm = BaseLLM()
+    print(f"Loaded validation dataset with {len(testset)} examples")
+    
+    print("\nLoading model...")
+    llm = load_sft()
+    print("Model loaded successfully")
 
-    # Load the model with LoRA adapters
+    # Print a few example questions and answers
+    print("\nTesting a few example questions:")
+    for i in range(3):
+        question = testset[i][0]
+        correct_answer = testset[i][1]
+        formatted_prompt = llm.format_prompt(question)
+        print(f"\nQuestion {i+1}: {question}")
+        print(f"Formatted prompt: {formatted_prompt}")
+        
+        raw_output = llm.generate(formatted_prompt)
+        print(f"Raw output: {raw_output}")
+        
+        parsed_answer = llm.parse_answer(raw_output)
+        print(f"Parsed answer: {parsed_answer}")
+        print(f"Correct answer: {correct_answer}")
+        print(f"Is correct: {abs(parsed_answer - correct_answer) < 0.05 * abs(correct_answer)}")
+
+    # Run the benchmark
+    print("\nRunning benchmark on validation set...")
+    benchmark_result = benchmark(llm, testset, 100)
+    print(f"\nBenchmark Results:")
+    print(f"Accuracy: {benchmark_result.accuracy:.4f}")
+    print(f"Answer Rate: {benchmark_result.answer_rate:.4f}")
+    
+    # Print a few example predictions
+    print("\nExample Predictions:")
+    for i, sample in enumerate(benchmark_result.samples[:5]):
+        print(f"\nExample {i+1}:")
+        print(f"Question: {sample.question}")
+        print(f"Predicted: {sample.answer}")
+        print(f"Correct: {sample.correct_answer}")
+        print(f"Is Correct: {sample.is_correct}")
+
+
+def load_sft(ckpt_path: str = None) -> BaseLLM:
+    print(f"Loading SFT model...")
+    from pathlib import Path
+
     from peft import PeftModel
 
-    llm.model = PeftModel.from_pretrained(llm.model, ckpt_path).to(llm.device)
+    if ckpt_path is None:
+        ckpt_path = str(Path(__file__).parent / "sft_model")
+    print(f"Using model path: {ckpt_path}")
 
-    benchmark_result = benchmark(llm, testset, 100)
-    print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")
+    llm = BaseLLM()
+    print(f"Base model loaded, device: {llm.device}")
+    
+    llm.model = PeftModel.from_pretrained(llm.model, ckpt_path).to(llm.device)
+    print("LoRA adapters loaded")
+    
+    llm.model.eval()
+    print("Model set to eval mode")
+    
+    # Set the model_name attribute to identify this as an SFT model
+    llm.model_name = "sft"
+    print("Model name set to 'sft'")
+
+    return llm
 
 
 if __name__ == "__main__":
     from fire import Fire
 
-    Fire({"train": train_model, "test": test_model, "load": load})
+    Fire({"train": train_model, "test": test_model, "load": load_sft})
