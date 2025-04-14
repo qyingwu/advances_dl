@@ -2,6 +2,7 @@ from typing import overload
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import re
 
 checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
@@ -16,45 +17,78 @@ class BaseLLM:
 
     def format_prompt(self, question: str) -> str:
         """
-        Take a question and convert it into an input to SmolLM2. The LLM will likely answer much
-        better if you provide a chat template. self.tokenizer.apply_chat_template can help here
+        Format the prompt for the model.
+        For CoT model, use the chat template.
+        For SFT model, just return the question.
         """
-        return question
+        # Check if we're using the CoT model or the SFT model
+        if hasattr(self, 'model_name') and self.model_name == 'cot':
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that solves unit conversion problems. Provide your reasoning and then give your answer in the format <answer>X</answer> where X is the numerical answer."},
+                {"role": "user", "content": question}
+            ]
+            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            # For SFT model, just return the question
+            return question
 
-    def parse_answer(self, answer: str) -> float:
+    def parse_answer(self, text: str) -> float:
         """
-        Parse the <answer></answer> tag and return a float.
-        This function is somewhat robust to output errors (e.g. missing </answer> tags).
+        Parse the answer from the model's output.
+        The answer should be in the format <answer>X</answer> where X is a number.
+        If the answer is not in this format, try to find any number in the text.
         """
-        try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
-        except (IndexError, ValueError):
-            return float("nan")
+        # Try to find the answer in the format <answer>X</answer>
+        answer_match = re.search(r'<answer>([\d.]+)</answer>', text)
+        if answer_match:
+            return float(answer_match.group(1))
+        
+        # If no answer tags found, try to find any number in the text
+        numbers = re.findall(r'[\d.]+', text)
+        if numbers:
+            # Clean the number by removing any trailing non-numeric characters
+            clean_number = re.sub(r'[^\d.]', '', numbers[0])
+            try:
+                return float(clean_number)
+            except ValueError:
+                return float('nan')
+        
+        return float('nan')
 
     def generate(self, prompt: str) -> str:
         """
-        (Optional) Implement this method first and then implement batched_generate below.
-        It is much easier to implement generation without batching.
-
-        The overall flow is the same:
-        - tokenize the prompt with self.tokenizer
-        - call self.model.generate
-        - decode the outputs with self.tokenizer.decode
+        Generate text from the model with stable parameters.
         """
-        # Tokenize the input prompt
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        
-        # Generate output
-        outputs = self.model.generate(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs["attention_mask"],
-            max_new_tokens=50,
-            do_sample=False,  # Use greedy decoding
-            eos_token_id=self.tokenizer.eos_token_id
-        )
-        
-        # Decode and return the generated text
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        try:
+            # Set padding side to left for correct alignment
+            self.tokenizer.padding_side = "left"
+            
+            # Tokenize the prompt with padding
+            inputs = self.tokenizer(prompt, padding=True, return_tensors="pt").to(self.device)
+            
+            # Use stable generation parameters
+            with torch.no_grad():  # Disable gradient computation
+                outputs = self.model.generate(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_new_tokens=100,
+                    do_sample=False,  # Use greedy decoding for stability
+                    num_beams=1,  # Use greedy decoding
+                    pad_token_id=self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+            
+            # Get the length of the input sequence for masking
+            input_length = inputs["input_ids"].shape[1]
+            
+            # Decode only the generated tokens (excluding input tokens)
+            generated_tokens = outputs[:, input_length:]
+            decoded_output = self.tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
+            
+            return decoded_output
+        except Exception as e:
+            print(f"Error during generation: {str(e)}")
+            return f"Error: {str(e)}"
 
     @overload
     def batched_generate(
@@ -78,59 +112,35 @@ class BaseLLM:
         self, prompts: list[str], num_return_sequences: int | None = None, temperature: float = 0
     ) -> list[str] | list[list[str]]:
         """
-        Batched version of `generate` method.
-
-        You will likely get an up to 10x speedup using batched decoding.
-
-        To implement batch decoding you will need to:
-        - tokenize the prompts self.tokenizer with padding=True and return_tensors="pt"
-        - call self.model.generate
-        - decode the outputs with self.tokenizer.batch_decode
-
-        Tip: You need to set self.tokenizer.padding_side = "left" to get the correct padding behavior for generation.
-             Left padding makes sure all sequences are aligned to the right (i.e. where tokens are generated).
-        Tip: self.model.generate takes a lot of parameters. Here are some relevant ones:
-            - max_new_tokens: The maximum number of tokens to generate. Set this to a reasonable value
-                              (50 should suffice).
-            - do_sample and temperature: For any temperature > 0, set do_sample=True.
-                                         do_sample=False will use greedy decoding.
-            - num_return_sequences: The number of sequences to return. Note that this will generate a flat
-                                    list of len(prompts) * num_return_sequences entries.
-            - eos_token_id: The end of sequence token id. This is used to stop generation. Set this
-                            to self.tokenizer.eos_token_id.
-        Pro Tip: Only batch_decode generated tokens by masking out the inputs with
-                 outputs[:, len(inputs["input_ids"][0]) :]
+        Batched version of generate method with stable parameters.
         """
-        from tqdm import tqdm  # Importing tqdm for progress bar
-
-        # Preventing OOM
-        # Depending on your GPU batched generation will use a lot of memory.
-        # If you run out of memory, try to reduce the micro_batch_size.
-        micro_batch_size = 32
-        if len(prompts) > micro_batch_size:
-            return [
-                r
-                for idx in tqdm(
-                    range(0, len(prompts), micro_batch_size), desc=f"LLM Running on Micro Batches {micro_batch_size}"
-                )
-                for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
-            ]
-
         # Set padding side to left for correct alignment
         self.tokenizer.padding_side = "left"
         
         # Tokenize all prompts with padding
         inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self.device)
         
-        # Generate outputs
+        # Use more stable generation parameters
         outputs = self.model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
-            max_new_tokens=50,
-            do_sample=temperature > 0,
-            temperature=temperature if temperature > 0 else None,
+            max_new_tokens=100,
+            do_sample=False,  # Use greedy decoding for stability
             num_return_sequences=num_return_sequences if num_return_sequences is not None else 1,
-            eos_token_id=self.tokenizer.eos_token_id
+            pad_token_id=self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            # Remove parameters that might cause instability
+            # temperature=0.7,
+            # top_p=0.9,
+            # top_k=50,
+            # repetition_penalty=1.2,
+            # no_repeat_ngram_size=3,
+            # early_stopping=True,
+            # min_length=1,
+            # max_length=200,
+            # length_penalty=1.0,
+            # bad_words_ids=[[self.tokenizer.pad_token_id]] if self.tokenizer.pad_token_id is not None else None,
+            # use_cache=True
         )
         
         # Get the length of the first input sequence for masking

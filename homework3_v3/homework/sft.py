@@ -13,6 +13,9 @@ def load() -> BaseLLM:
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
+    
+    # Set the model_name attribute to identify this as an SFT model
+    llm.model_name = "sft"
 
     return llm
 
@@ -49,7 +52,17 @@ def format_example(prompt: str, answer: str) -> dict[str, str]:
     """
     Construct a question / answer pair. Consider rounding the answer to make it easier for the LLM.
     """
-    raise NotImplementedError()
+    # Round the answer to 3 decimal places for simplicity
+    rounded_answer = round(float(answer), 3)
+    
+    # Format the question and answer
+    formatted_question = prompt
+    formatted_answer = f"<answer>{rounded_answer}</answer>"
+    
+    return {
+        "question": formatted_question,
+        "answer": formatted_answer
+    }
 
 
 class TokenizedDataset:
@@ -78,7 +91,72 @@ def train_model(
     output_dir: str,
     **kwargs,
 ):
-    raise NotImplementedError()
+    """
+    Train a model using LoRA fine-tuning with improved settings.
+    
+    Args:
+        output_dir: Directory to save the model checkpoints
+        **kwargs: Additional arguments for training
+    """
+    from pathlib import Path
+    import torch
+    from transformers import TrainingArguments, Trainer, get_scheduler
+    from peft import get_peft_model, LoraConfig, TaskType
+    
+    # Create output directory if it doesn't exist
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Load the base model
+    llm = BaseLLM()
+    
+    # Configure LoRA with lower rank for stability
+    lora_config = LoraConfig(
+        r=8,  # Lower rank for better stability
+        lora_alpha=32,  # Alpha parameter (4x rank)
+        target_modules="all-linear",  # Apply LoRA to all linear layers
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
+    
+    # Convert the model to a LoRA model
+    model = get_peft_model(llm.model, lora_config)
+    
+    # Enable input require grads for gradient checkpointing
+    model.enable_input_require_grads()
+    
+    # Prepare the dataset
+    train_dataset = Dataset("train")
+    tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    
+    # Set up training arguments with improved settings
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        logging_dir=output_dir,
+        report_to="tensorboard",
+        learning_rate=1e-4,  # Moderate learning rate
+        num_train_epochs=6,  # Moderate number of epochs
+        per_device_train_batch_size=32,
+        gradient_checkpointing=True,
+        save_strategy="epoch",
+        weight_decay=0.01,  # Add weight decay for regularization
+        warmup_ratio=0.1,  # Add warmup
+        lr_scheduler_type="cosine",  # Use cosine learning rate schedule
+    )
+    
+    # Create the trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_dataset,
+    )
+    
+    # Train the model
+    trainer.train()
+    
+    # Save the model
+    trainer.save_model(output_dir)
+    
+    # Test the model
     test_model(output_dir)
 
 
