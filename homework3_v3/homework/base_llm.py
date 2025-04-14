@@ -17,19 +17,17 @@ class BaseLLM:
 
     def format_prompt(self, question: str) -> str:
         """
-        Format the prompt for the model.
-        For CoT model, use the chat template.
-        For SFT model, just return the question.
+        Format a question for the model.
+        For SFT model, we just return the question as is.
+        For RFT model, we add instructions for reasoning.
         """
-        # Check if we're using the CoT model or the SFT model
-        if hasattr(self, 'model_name') and self.model_name == 'cot':
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant that solves unit conversion problems. Provide your reasoning and then give your answer in the format <answer>X</answer> where X is the numerical answer."},
-                {"role": "user", "content": question}
-            ]
-            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        if hasattr(self, 'model_name') and self.model_name == "rft":
+            return f"{question}\nPlease provide your reasoning and then give your answer in the format <answer>X</answer> where X is the numerical answer."
+        elif hasattr(self, 'model_name') and self.model_name == "sft":
+            # For SFT model, add a hint to format the answer correctly
+            return f"{question}\nPlease provide your answer in the format <answer>X</answer> where X is the numerical answer."
         else:
-            # For SFT model, just return the question
+            # For other models, just return the question
             return question
 
     def parse_answer(self, text: str) -> float:
@@ -41,7 +39,10 @@ class BaseLLM:
         # Try to find the answer in the format <answer>X</answer>
         answer_match = re.search(r'<answer>([\d.]+)</answer>', text)
         if answer_match:
-            return float(answer_match.group(1))
+            try:
+                return float(answer_match.group(1))
+            except ValueError:
+                print(f"Warning: Could not convert '{answer_match.group(1)}' to float")
         
         # If no answer tags found, try to find any number in the text
         numbers = re.findall(r'[\d.]+', text)
@@ -51,8 +52,9 @@ class BaseLLM:
             try:
                 return float(clean_number)
             except ValueError:
-                return float('nan')
+                print(f"Warning: Could not convert '{clean_number}' to float")
         
+        print(f"Warning: No valid number found in text: '{text}'")
         return float('nan')
 
     def generate(self, prompt: str) -> str:
@@ -71,11 +73,12 @@ class BaseLLM:
                 outputs = self.model.generate(
                     input_ids=inputs["input_ids"],
                     attention_mask=inputs["attention_mask"],
-                    max_new_tokens=100,
+                    max_new_tokens=50,  # Reduced max tokens
                     do_sample=False,  # Use greedy decoding for stability
                     num_beams=1,  # Use greedy decoding
                     pad_token_id=self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
+                    use_cache=True  # Use KV cache for faster generation
                 )
             
             # Get the length of the input sequence for masking
@@ -84,6 +87,21 @@ class BaseLLM:
             # Decode only the generated tokens (excluding input tokens)
             generated_tokens = outputs[:, input_length:]
             decoded_output = self.tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
+            
+            # For SFT model, ensure the output is in the expected format
+            if hasattr(self, 'model_name') and self.model_name == "sft":
+                # Check if the output already contains <answer> tags
+                if "<answer>" not in decoded_output:
+                    # Try to find a number in the output
+                    numbers = re.findall(r'[\d.]+', decoded_output)
+                    if numbers:
+                        # Clean the number by removing any trailing non-numeric characters
+                        clean_number = re.sub(r'[^\d.]', '', numbers[0])
+                        try:
+                            # Format the output with <answer> tags
+                            decoded_output = f"<answer>{clean_number}</answer>"
+                        except ValueError:
+                            pass
             
             return decoded_output
         except Exception as e:
@@ -124,23 +142,12 @@ class BaseLLM:
         outputs = self.model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
-            max_new_tokens=100,
+            max_new_tokens=50,  # Reduced max tokens
             do_sample=False,  # Use greedy decoding for stability
             num_return_sequences=num_return_sequences if num_return_sequences is not None else 1,
             pad_token_id=self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            # Remove parameters that might cause instability
-            # temperature=0.7,
-            # top_p=0.9,
-            # top_k=50,
-            # repetition_penalty=1.2,
-            # no_repeat_ngram_size=3,
-            # early_stopping=True,
-            # min_length=1,
-            # max_length=200,
-            # length_penalty=1.0,
-            # bad_words_ids=[[self.tokenizer.pad_token_id]] if self.tokenizer.pad_token_id is not None else None,
-            # use_cache=True
+            use_cache=True  # Use KV cache for faster generation
         )
         
         # Get the length of the first input sequence for masking
@@ -149,6 +156,22 @@ class BaseLLM:
         # Decode only the generated tokens (excluding input tokens)
         generated_tokens = outputs[:, input_length:]
         decoded_outputs = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        
+        # For SFT model, ensure the outputs are in the expected format
+        if hasattr(self, 'model_name') and self.model_name == "sft":
+            for i in range(len(decoded_outputs)):
+                # Check if the output already contains <answer> tags
+                if "<answer>" not in decoded_outputs[i]:
+                    # Try to find a number in the output
+                    numbers = re.findall(r'[\d.]+', decoded_outputs[i])
+                    if numbers:
+                        # Clean the number by removing any trailing non-numeric characters
+                        clean_number = re.sub(r'[^\d.]', '', numbers[0])
+                        try:
+                            # Format the output with <answer> tags
+                            decoded_outputs[i] = f"<answer>{clean_number}</answer>"
+                        except ValueError:
+                            pass
         
         # Reshape output if num_return_sequences is specified
         if num_return_sequences is not None:

@@ -7,7 +7,7 @@ def load() -> BaseLLM:
 
     from peft import PeftModel
 
-    model_name = "sft_model"
+    model_name = "sft_model"  # Make sure this matches the name used in the grader
     model_path = Path(__file__).parent / model_name
 
     llm = BaseLLM()
@@ -109,10 +109,10 @@ def train_model(
     # Load the base model
     llm = BaseLLM()
     
-    # Configure LoRA with lower rank for stability
+    # Configure LoRA with higher rank for better accuracy
     lora_config = LoraConfig(
-        r=8,  # Lower rank for better stability
-        lora_alpha=32,  # Alpha parameter (4x rank)
+        r=24,  # Higher rank for better accuracy
+        lora_alpha=96,  # Alpha parameter (4x rank)
         target_modules="all-linear",  # Apply LoRA to all linear layers
         bias="none",
         task_type=TaskType.CAUSAL_LM,
@@ -133,9 +133,9 @@ def train_model(
         output_dir=output_dir,
         logging_dir=output_dir,
         report_to="tensorboard",
-        learning_rate=1e-4,  # Moderate learning rate
-        num_train_epochs=6,  # Moderate number of epochs
-        per_device_train_batch_size=32,
+        learning_rate=5e-5,  # Lower learning rate for stability
+        num_train_epochs=10,  # More epochs for better accuracy
+        per_device_train_batch_size=16,  # Smaller batch size for stability
         gradient_checkpointing=True,
         save_strategy="epoch",
         weight_decay=0.01,  # Add weight decay for regularization
@@ -158,6 +158,10 @@ def train_model(
     
     # Test the model
     test_model(output_dir)
+    
+    # Print a message to remind the user to run the grader
+    print("\nTraining completed. To run the grader, use:")
+    print("python -m grader.tests")
 
 
 def test_model(ckpt_path: str):
