@@ -35,27 +35,46 @@ class BaseLLM:
         Parse the answer from the model's output.
         The answer should be in the format <answer>X</answer> where X is a number.
         If the answer is not in this format, try to find any number in the text.
+        Returns NaN if no valid number is found.
         """
-        # Try to find the answer in the format <answer>X</answer>
-        answer_match = re.search(r'<answer>([\d.]+)</answer>', text)
-        if answer_match:
-            try:
-                return float(answer_match.group(1))
-            except ValueError:
-                print(f"Warning: Could not convert '{answer_match.group(1)}' to float")
-        
-        # If no answer tags found, try to find any number in the text
-        numbers = re.findall(r'[\d.]+', text)
-        if numbers:
-            # Clean the number by removing any trailing non-numeric characters
-            clean_number = re.sub(r'[^\d.]', '', numbers[0])
-            try:
-                return float(clean_number)
-            except ValueError:
-                print(f"Warning: Could not convert '{clean_number}' to float")
-        
-        print(f"Warning: No valid number found in text: '{text}'")
-        return float('nan')
+        try:
+            # Try to find the answer in the format <answer>X</answer>
+            answer_match = re.search(r'<answer>([\d.]+)</answer>', text)
+            if answer_match:
+                try:
+                    # Clean the number and convert to float
+                    clean_number = re.sub(r'[^\d.]', '', answer_match.group(1))
+                    if clean_number:
+                        # Handle numbers with multiple decimal points by keeping only the first one
+                        if clean_number.count('.') > 1:
+                            parts = clean_number.split('.')
+                            clean_number = parts[0] + '.' + ''.join(parts[1:])
+                        return round(float(clean_number), 3)
+                except ValueError:
+                    print(f"Warning: Could not convert '{answer_match.group(1)}' to float")
+            
+            # If no answer tags found or conversion failed, try to find any number in the text
+            numbers = re.findall(r'[\d.]+', text)
+            if numbers:
+                # Try each number found until we get a valid float
+                for num in numbers:
+                    try:
+                        # Clean the number by removing any trailing non-numeric characters
+                        clean_number = re.sub(r'[^\d.]', '', num)
+                        if clean_number:
+                            # Handle numbers with multiple decimal points by keeping only the first one
+                            if clean_number.count('.') > 1:
+                                parts = clean_number.split('.')
+                                clean_number = parts[0] + '.' + ''.join(parts[1:])
+                            return round(float(clean_number), 3)
+                    except ValueError:
+                        continue
+            
+            print(f"Warning: No valid number found in text: '{text}'")
+            return float('nan')
+        except Exception as e:
+            print(f"Error parsing answer: {str(e)}")
+            return float('nan')
 
     def generate(self, prompt: str) -> str:
         """
@@ -143,7 +162,8 @@ class BaseLLM:
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             max_new_tokens=50,  # Reduced max tokens
-            do_sample=False,  # Use greedy decoding for stability
+            do_sample=num_return_sequences is not None and num_return_sequences > 1,  # Use sampling for multiple sequences
+            temperature=temperature if num_return_sequences is not None and num_return_sequences > 1 else 1.0,  # Apply temperature only when sampling
             num_return_sequences=num_return_sequences if num_return_sequences is not None else 1,
             pad_token_id=self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
