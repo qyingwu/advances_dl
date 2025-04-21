@@ -508,8 +508,168 @@ def test_model(model_path: str, question: str | None = None):
         print("Try using the model directly with generate.py for more detailed error information.")
         return None
 
+def test_samples():
+    """
+    Test specific samples with the RFT model to analyze performance, including edge cases.
+    """
+    print("\nTesting RFT model on specific samples and edge cases...")
+    
+    # Load the model
+    llm = load_rft()
+    print("Model loaded successfully")
+    
+    # Test cases with expected answers, including edge cases
+    test_cases = [
+        # Basic conversions (for baseline)
+        ("Convert 2 years to weeks", 104.355),
+        ("Convert 5 GB to MB", 5000.0),
+        
+        # Edge cases - very small numbers
+        ("Convert 0.001 seconds to milliseconds", 1.0),
+        ("Convert 0.0001 meters to millimeters", 0.1),
+        
+        # Edge cases - very large numbers
+        ("Convert 1000 terabytes to gigabytes", 1000000.0),
+        ("Convert 1000 light years to kilometers", 9.461e15),
+        
+        # Edge cases - zero and negative values
+        ("Convert 0 hours to minutes", 0.0),
+        ("Convert -5 degrees Celsius to Fahrenheit", 23.0),
+        
+        # Complex multi-step conversions
+        ("Convert 1 millennium to hours", 8766000.0),
+        ("Convert 1 light year to miles", 5.878e12),
+        
+        # Uncommon unit conversions
+        ("Convert 1 parsec to light years", 3.26156),
+        ("Convert 1 astronomical unit to kilometers", 149597870.7),
+        
+        # Precision-sensitive conversions
+        ("Convert 1 pound to grams", 453.592),
+        ("Convert 1 mile to meters", 1609.344),
+        
+        # Common unit conversions (to test consistency)
+        ("Convert 1 hour to minutes", 60.0),
+        ("Convert 1 kilometer to meters", 1000.0),
+        ("Convert 1 kilogram to grams", 1000.0),
+        ("Convert 1 liter to milliliters", 1000.0),
+        ("Convert 2 months to days", 60.0),
+        
+        # Decimal handling
+        ("Convert 2.5 hours to minutes", 150.0),
+        ("Convert 1.5 kilometers to meters", 1500.0),
+        ("Convert 0.75 kilograms to grams", 750.0),
+        
+        # Format variations
+        ("How many weeks are in 2 years?", 104.355),
+        ("What is 5 GB in MB?", 5000.0),
+        ("Convert five gigabytes to megabytes", 5000.0),
+        
+        # Edge cases - unit spelling variations
+        ("Convert 1 metre to centimetres", 100.0),  # British spelling
+        ("Convert 1 meter to centimeters", 100.0),  # American spelling
+        
+        # Edge cases - spacing and formatting
+        ("Convert1hourto minutes", 60.0),  # No spaces
+        ("   Convert   1   hour   to   minutes   ", 60.0),  # Extra spaces
+        
+        # Edge cases - different number formats
+        ("Convert 1,000 meters to kilometers", 1.0),  # Comma in number
+        ("Convert 1e3 meters to kilometers", 1.0),    # Scientific notation
+        
+        # Edge cases - compound units
+        ("Convert 60 miles per hour to kilometers per hour", 96.56),
+        ("Convert 1 meter per second to kilometers per hour", 3.6),
+        
+        # Edge cases - temperature conversions (non-linear)
+        ("Convert 0 Celsius to Fahrenheit", 32.0),
+        ("Convert 100 Celsius to Fahrenheit", 212.0),
+        ("Convert -40 Celsius to Fahrenheit", -40.0),  # Interesting case where they're equal
+        
+        # Edge cases - precision requirements
+        ("Convert 1/3 hour to minutes", 20.0),
+        ("Convert pi kilometers to meters", 3141.59),  # Testing mathematical constants
+    ]
+    
+    print("\nTesting individual questions:")
+    total_tests = len(test_cases)
+    passed_tests = 0
+    failed_cases = []
+    
+    for question, expected in test_cases:
+        print(f"\nQuestion: {question}")
+        print(f"Expected answer: {expected}")
+        
+        # Format and generate
+        formatted_prompt = llm.format_prompt(question)
+        print(f"Formatted prompt: {formatted_prompt}")
+        
+        raw_output = llm.generate(formatted_prompt)
+        print(f"Raw output: {raw_output}")
+        
+        # Parse and validate
+        try:
+            answer = llm.parse_answer(raw_output)
+            print(f"Parsed answer: {answer}")
+            
+            # Check if answer is within 5% of expected
+            is_correct = abs(answer - expected) / expected < 0.05 if expected != 0 else abs(answer) < 1e-6
+            print(f"Is correct (within 5%): {is_correct}")
+            
+            if is_correct:
+                passed_tests += 1
+            else:
+                relative_error = abs(answer - expected) / expected * 100 if expected != 0 else abs(answer)
+                print(f"Relative error: {relative_error:.2f}%")
+                failed_cases.append((question, expected, answer, relative_error))
+        except Exception as e:
+            print(f"Error parsing answer: {e}")
+            failed_cases.append((question, expected, "ERROR", None))
+    
+    # Print summary
+    print("\n" + "="*50)
+    print("TEST SUMMARY")
+    print("="*50)
+    print(f"Total tests: {total_tests}")
+    print(f"Passed tests: {passed_tests}")
+    print(f"Failed tests: {total_tests - passed_tests}")
+    print(f"Success rate: {(passed_tests/total_tests)*100:.2f}%")
+    
+    if failed_cases:
+        print("\nFailed cases:")
+        for question, expected, actual, error in failed_cases:
+            print(f"\nQuestion: {question}")
+            print(f"Expected: {expected}")
+            print(f"Got: {actual}")
+            if error is not None:
+                print(f"Relative error: {error:.2f}%")
+    
+    # Test batch processing with a subset of cases
+    print("\nTesting batch processing with a subset of cases:")
+    subset_cases = test_cases[:5]  # Take first 5 cases for batch testing
+    questions = [case[0] for case in subset_cases]
+    expected = [case[1] for case in subset_cases]
+    
+    try:
+        answers = llm.answer(*questions)
+        print("\nBatch results:")
+        batch_passed = 0
+        for q, a, e in zip(questions, answers, expected):
+            print(f"\nQuestion: {q}")
+            print(f"Expected: {e}")
+            print(f"Got: {a}")
+            is_correct = abs(a - e) / e < 0.05 if e != 0 else abs(a) < 1e-6
+            print(f"Is correct (within 5%): {is_correct}")
+            if is_correct:
+                batch_passed += 1
+            else:
+                relative_error = abs(a - e) / e * 100 if e != 0 else abs(a)
+                print(f"Relative error: {relative_error:.2f}%")
+        
+        print(f"\nBatch processing success rate: {(batch_passed/len(subset_cases))*100:.2f}%")
+    except Exception as e:
+        print(f"Error in batch processing: {e}")
 
 if __name__ == "__main__":
     from fire import Fire
-
-    Fire({"train": train_model, "test": test_model, "load": load_rft})
+    Fire({"train": train_model, "test": test_model, "load": load_rft, "samples": test_samples})

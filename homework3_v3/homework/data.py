@@ -1,6 +1,7 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import math
 
 from .base_llm import BaseLLM
 
@@ -20,7 +21,35 @@ class Dataset:
 
 
 def is_answer_valid(answer: float, correct_answer: float, relative_tolerance: float = 0.05) -> bool:
-    return abs(round(answer, 3) - round(correct_answer, 3)) < relative_tolerance * abs(round(correct_answer, 3))
+    """Check if an answer is valid within a relative tolerance.
+    
+    Args:
+        answer: The model's answer
+        correct_answer: The correct answer
+        relative_tolerance: Maximum allowed relative difference (default: 0.05 or 5%)
+    
+    Returns:
+        bool: True if the answer is within the tolerance, False otherwise
+    """
+    # Handle NaN values
+    if math.isnan(answer) or math.isnan(correct_answer):
+        return False
+    
+    # Round both numbers to 3 decimal places
+    rounded_answer = round(answer, 3)
+    rounded_correct = round(correct_answer, 3)
+    
+    # If the numbers are exactly equal after rounding, they're valid
+    if rounded_answer == rounded_correct:
+        return True
+    
+    # For very small numbers, use absolute difference
+    if abs(rounded_correct) < 1e-10:
+        return abs(rounded_answer - rounded_correct) < 1e-10
+    
+    # For larger numbers, use relative difference
+    relative_diff = abs(rounded_answer - rounded_correct) / abs(rounded_correct)
+    return relative_diff < relative_tolerance
 
 
 @dataclass
